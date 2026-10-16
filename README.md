@@ -21,7 +21,7 @@ npm run build
 npm start
 ```
 
-Stop with Ctrl+C. The server binds to loopback only. This is a local review application, not a publicly hosted multi-user service.
+Stop with Ctrl+C. The server binds to loopback only. This command is for local review. Vercel serves the same API through the function entry points described below.
 
 ## Demo and live AI
 
@@ -101,9 +101,9 @@ Tests cover empty/oversized inputs, positive/negative examples, negation, fabric
 - System instructions and untrusted message text occupy separate roles. This reduces prompt-injection risk but does not prove immunity. A quote’s presence does not prove the model’s interpretation.
 - Demo rules are not comprehensive NLP: obfuscation, synonyms, multilingual messages, quotations, sarcasm and complex negation can produce misses or false positives. A “Low” result is not a safety certificate.
 - Risk levels are heuristic attention categories, not calibrated scores. No identity, URL reputation, factual claim, or sender intent is independently verified.
-- OCR, uploads, saved history, authentication, and public deployment are intentionally outside this local version. Add appropriate authentication and deployment-specific abuse protections before exposing it to a network.
+- OCR, uploads, saved history, and authentication are not implemented. Vercel hosting is supported below; the existing in-memory rate and concurrency limits apply per function instance, not globally across Vercel. Configure platform-level abuse/rate controls to bound usage of a public AI endpoint.
 
-Do not commit `.env`, generated browser profiles, or sensitive reports. Git initialization and publishing are left to the project owner.
+Do not commit `.env`, generated browser profiles, or sensitive reports. Committing, pushing, and deploying are left to the project owner.
 
 ## Verification record — 16 October 2026
 
@@ -115,3 +115,86 @@ Do not commit `.env`, generated browser profiles, or sensitive reports. Git init
 - Build emitted two non-fatal annotation warnings from Zod dependency comments; the frontend build completed successfully.
 - Port 3000 was occupied by an existing application; Unphishable uses 4173 and its browser tests use 4174.
 # Unphishable
+
+
+## Vercel deployment through the existing GitHub repository
+
+The frontend build alone cannot serve the API. `server/index.ts` starts a loopback
+HTTP server for local use; Vercel's Vite deployment does not run `npm start`.
+`api/config.ts` and `api/analyze.ts` now export the same request handler used
+locally, via `server/vercel.ts`. Vercel discovers those root `api/` files as Node
+functions alongside the static `dist` frontend. No catch-all SPA rewrite is needed
+(the UI uses hash anchors), and no external backend URL or CORS wildcard is needed.
+
+Hosted requests keep HTTPS same-origin checks, bounded/validated input, validated
+output, evidence checks, safe errors, and security headers. Local requests retain
+loopback Host checks. Vercel's pre-parsed `request.body` and ordinary raw Node
+streams are both supported. AI configuration is initialized lazily, keeping demo
+mode usable even if the provider setup is invalid. Function duration is 60 seconds,
+above the adapter's 25-second timeout. The AI adapter itself is unchanged.
+
+On Vercel, **demo messages are processed on the app server**, not exclusively in
+the visitor's browser. Demo does not call an AI provider. The app does not persist
+messages; hosting-provider policies still apply. UI privacy wording reflects this.
+The rate/concurrency counters are per warm instance and reset on cold starts;
+they are not a distributed quota or authentication system.
+
+### Steps for the repository owner (not executed automatically)
+
+1. In the existing Vercel project, confirm the Git connection is
+   `AdityaDugar11/Unphishable`, with production branch `main`. Set Root Directory
+   to the repository root (the directory with `package.json`, not `src` or `dist`).
+   Use the Vite framework preset, build command `npm run build`, output `dist`,
+   and Node.js 22.x or 24.x. The committed `vercel.json` defines the build/output
+   and function settings. Remove any old project-level routing override that
+   forwards `/api/*` to HTML or another backend.
+2. Demo needs no AI environment variables. For Gemini live mode, keep your
+   existing valid model selection and set these server-side variables in Vercel
+   for Production (and Preview if you want to test live mode there):
+   - `AI_API_KEY`: your Gemini API key.
+   - `AI_MODEL`: the compatible Gemini model you already use.
+   - `AI_BASE_URL`: `https://generativelanguage.googleapis.com/v1beta/openai`.
+   Do not use `VITE_` prefixes, commit `.env`, or change `PORT` on Vercel.
+3. Review, commit and push the fix yourself:
+
+   ```bash
+   cd /home/adityadugar/Documents/Projects/unphishable
+   npm run check
+   git diff --check
+   git diff
+   git add api/config.ts api/analyze.ts server/app.ts server/vercel.ts vercel.json tsconfig.json tests/vercel.test.ts tests/browser/workspace.spec.ts src/main.ts README.md
+   git diff --cached
+   git commit -m "Fix Vercel API deployment for config and analysis"
+   git push origin main
+   ```
+
+   The connected Vercel project should build that commit. If automatic deployments
+   are disabled, deploy that new commit from the existing project's Deployments
+   view. Redeploy after changing environment variables; redeploying the old commit
+   will not add the new function files.
+4. Confirm the deployment includes `/api/config` and `/api/analyze` functions.
+   Replace `YOUR-DEPLOYMENT` with the deployment hostname and check:
+
+   ```bash
+   curl -i https://YOUR-DEPLOYMENT/api/config
+   curl -i https://YOUR-DEPLOYMENT/api/analyze \
+     -H 'Content-Type: application/json' \
+     --data '{"message":"Send your password immediately.","mode":"demo"}'
+   ```
+
+   Both should return HTTP 200 with `Content-Type: application/json`.
+   Config returns `liveAvailable`; demo returns `mode: "demo"`, risk, findings and
+   recommendations. A POST with `{"message":"","mode":"demo"}` should return a
+   JSON 400, not HTML. If Deployment Protection is enabled, authenticate in the
+   browser before testing; unauthenticated curl can instead receive a platform
+   authentication page. Finally load the site, run a demo sample, and optionally
+   test live mode. `/api/config` being true means configured, not credential-verified.
+
+References: [Vite on Vercel](https://vercel.com/docs/frameworks/frontend/vite),
+[Node functions and parsed request bodies](https://vercel.com/docs/functions/runtimes/node-js),
+[Gemini compatibility endpoint](https://ai.google.dev/gemini-api/docs/openai).
+
+The deployment regression tests exercise the actual exported handlers in a local
+HTTP harness with hosted headers and Vercel-style bodies. They do not deploy to
+Vercel or make live Gemini calls. Platform routing and production credentials must
+still be smoke-tested after the owner deploys the fix.

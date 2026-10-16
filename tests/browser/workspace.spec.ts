@@ -65,3 +65,12 @@ test('live mode requires explicit selection and displays provider disclosure', a
   await expect(page.getByRole('alert')).toContainText('timed out');
   await expect(page.getByLabel('Analysis mode')).toHaveValue('live');
 });
+test('platform text errors produce actionable API guidance rather than a JSON syntax error', async ({ page }) => {
+  await page.route('**/api/config', route => route.fulfill({ status: 404, contentType: 'text/plain', body: 'The page could not be found' }));
+  await page.route('**/api/analyze', route => route.fulfill({ status: 500, contentType: 'text/plain', body: 'The function could not be invoked' }));
+  await page.goto('/');
+  await expect(page.locator('#connection')).toContainText('/api/config and /api/analyze');
+  await page.getByLabel('What landed in your inbox?').fill('Hello');
+  await page.getByRole('button', { name: 'Decode message' }).click();
+  await expect(page.getByRole('alert')).toHaveText('The API returned a non-JSON response. Check the API deployment and try again.');
+});

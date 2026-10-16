@@ -5,11 +5,12 @@ import { requestSchema, responseSchema } from '../shared/schema.ts';
 import { baseline } from './rules.ts';
 import { AppError, type Provider } from './provider.ts';
 type Middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
-export function createApp({ provider, middleware, limit = 30 }: { provider?: Provider; middleware?: Middleware; limit?: number } = {}) {
+type AppOptions = { provider?: Provider; getProvider?: () => Provider | undefined; middleware?: Middleware; limit?: number; hosted?: boolean };
+export function createRequestHandler({ provider, getProvider = () => provider, middleware, limit = 30, hosted = false }: AppOptions = {}) {
   const requests = new Map<string, { count: number; expires: number }>();
   let active = 0;
   const json = (res: ServerResponse, status: number, data: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); };
-  const server = createServer(async (req, res) => {
+  return async (req: IncomingMessage & { body?: unknown }, res: ServerResponse) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -17,13 +18,14 @@ export function createApp({ provider, middleware, limit = 30 }: { provider?: Pro
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self'; style-src 'self'${middleware ? " 'unsafe-inline'" : ''}; img-src 'self' data:; connect-src 'self'${middleware ? ' ws://127.0.0.1:* ws://localhost:*' : ''}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`);
     try {
-      // Local-only server: reject DNS rebinding and cross-origin requests.
-      if (!/^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.host || '')) throw new AppError(403, 'This application only accepts local requests.');
+      // Vercel routes the Host to this deployment. Never trust forwarded-host/origin headers.
+      const host = req.headers.host || '';
+      if (hosted ? !/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/i.test(host) : !/^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(host)) throw new AppError(403, 'Request host is not allowed.');
       const origin = req.headers.origin;
-      if (origin && origin !== `http://${req.headers.host}`) throw new AppError(403, 'Cross-origin requests are not allowed.');
+      if (origin && origin !== `${hosted ? 'https' : 'http'}://${host}`) throw new AppError(403, 'Cross-origin requests are not allowed.');
       if (req.headers['sec-fetch-site'] === 'cross-site') throw new AppError(403, 'Cross-site requests are not allowed.');
       const path = new URL(req.url || '/', 'http://localhost').pathname;
-      if (path === '/api/config' && req.method === 'GET') return json(res, 200, { liveAvailable: Boolean(provider) });
+      if (path === '/api/config' && req.method === 'GET') return json(res, 200, { liveAvailable: Boolean(getProvider()) });
       if (path === '/api/analyze') {
         if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); throw new AppError(405, 'Use POST for analysis.'); }
         if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) throw new AppError(415, 'Send a JSON request.');
@@ -36,16 +38,29 @@ export function createApp({ provider, middleware, limit = 30 }: { provider?: Pro
         if (active >= 4) throw new AppError(429, 'The analyzer is busy. Please try again shortly.');
         active++;
         try {
-          let size = 0; const chunks: Buffer[] = [];
-          for await (const chunk of req) { size += chunk.length; if (size > 65536) throw new AppError(413, 'The request is too large. Use at most 10,000 characters.'); chunks.push(Buffer.from(chunk)); }
+          if (Number(req.headers['content-length'] || 0) > 65536) throw new AppError(413, 'The request is too large. Use at most 10,000 characters.');
           let raw: unknown;
-          try { raw = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new AppError(400, 'The request must contain valid JSON.'); }
+          if ('body' in req) {
+            // Vercel's Node helpers may have already consumed the stream. Its lazy
+            // body getter can throw for malformed JSON; keep that error JSON too.
+            try { raw = req.body; } catch { throw new AppError(400, 'The request must contain valid JSON.'); }
+            const serialized = typeof raw === 'string' ? raw : Buffer.isBuffer(raw) ? raw.toString('utf8') : JSON.stringify(raw);
+            if (serialized && Buffer.byteLength(serialized) > 65536) throw new AppError(413, 'The request is too large. Use at most 10,000 characters.');
+            if (typeof raw === 'string' || Buffer.isBuffer(raw)) {
+              try { raw = JSON.parse(serialized!); } catch { throw new AppError(400, 'The request must contain valid JSON.'); }
+            }
+          } else {
+            let size = 0; const chunks: Buffer[] = [];
+            for await (const chunk of req) { size += chunk.length; if (size > 65536) throw new AppError(413, 'The request is too large. Use at most 10,000 characters.'); chunks.push(Buffer.from(chunk)); }
+            try { raw = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new AppError(400, 'The request must contain valid JSON.'); }
+          }
           const parsed = requestSchema.safeParse(raw);
           if (!parsed.success) throw new AppError(400, 'Enter a nonempty message of at most 10,000 characters and choose a valid mode.');
           const { message, mode } = parsed.data;
           const checks = baseline(message);
-          if (mode === 'live' && !provider) throw new AppError(503, 'Live AI is not configured. Select demo mode, or configure an API key and model on the server.');
-          const analysis = mode === 'live' ? await provider!.analyze(message, checks) : checks;
+          const selectedProvider = mode === 'live' ? getProvider() : undefined;
+          if (mode === 'live' && !selectedProvider) throw new AppError(503, 'Live AI is not configured. Select demo mode, or configure an API key and model on the server.');
+          const analysis = mode === 'live' ? await selectedProvider!.analyze(message, checks) : checks;
           return json(res, 200, responseSchema.parse({ ...analysis, mode, notice: mode === 'live' ? 'Live AI analysis with tentative rule checks. Evidence quotes were checked against your message. Findings are decision support, not proof of intent.' : 'Demonstration mode · English phrase rules, not live AI. No message was sent to an AI provider.' }));
         } finally { active--; }
       }
@@ -65,7 +80,11 @@ export function createApp({ provider, middleware, limit = 30 }: { provider?: Pro
       const known = error instanceof AppError;
       json(res, known ? error.status : 500, { error: known ? error.message : 'Analysis could not be completed. Please try again.' });
     }
-  });
+  };
+}
+
+export function createApp(options: AppOptions = {}) {
+  const server = createServer(createRequestHandler(options));
   server.requestTimeout = 10000;
   server.headersTimeout = 10000;
   return server;
