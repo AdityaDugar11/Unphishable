@@ -1,0 +1,13 @@
+import { createApp } from './app.ts';
+import { createProvider } from './provider.ts';
+const dev = process.argv.includes('--dev');
+const port = Number(process.env.PORT || 4173);
+if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be between 1 and 65535.');
+const key = process.env.AI_API_KEY?.trim();
+const model = process.env.AI_MODEL?.trim();
+const provider = key && model ? createProvider({ key, model, baseUrl: process.env.AI_BASE_URL || 'https://api.openai.com/v1' }) : undefined;
+const vite = dev ? await (await import('vite')).createServer({ server: { middlewareMode: true, hmr: false }, appType: 'spa' }) : undefined;
+const server = createApp({ provider, middleware: vite?.middlewares });
+server.on('error', () => { console.error('Unable to start the local server. Check that PORT is available.'); process.exit(1); });
+server.listen(port, '127.0.0.1', () => console.log(`Unphishable: http://127.0.0.1:${port} · ${provider ? 'Demo + live AI available' : 'Demo mode (no live AI configured)'}`));
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { server.close(() => { void vite?.close(); process.exit(0); }); server.closeIdleConnections(); });

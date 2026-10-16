@@ -1,0 +1,67 @@
+import { test, expect } from '@playwright/test';
+test('loads a suspicious example, highlights evidence, opens alternatives, and clears', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: /Account lockdown/ }).click();
+  await expect(page.getByLabel('What landed in your inbox?')).toHaveValue(/SECURITY ALERT/);
+  await page.getByRole('button', { name: 'Decode message' }).click();
+  await expect(page.getByRole('heading', { name: 'Critical risk' })).toBeVisible();
+  await expect(page.locator('mark').first()).toBeVisible();
+  await expect(page.locator('#result-label')).toHaveText('DEMO · RULE-BASED');
+  await page.getByText('Another way to read this', { exact: true }).first().click();
+  await expect(page.getByText('Real deadlines and security incidents', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Clear text' }).click();
+  await expect(page.getByLabel('What landed in your inbox?')).toHaveValue('');
+  await expect(page.getByRole('heading', { name: 'Turn uncertainty into clarity.' })).toBeVisible();
+});
+test('benign samples, input errors and safe text rendering', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Decode message' }).click();
+  await expect(page.getByRole('alert')).toContainText('Paste a message');
+  await page.getByRole('button', { name: /routine security notice/ }).click();
+  await page.getByRole('button', { name: 'Decode message' }).click();
+  await expect(page.getByRole('heading', { name: 'Low risk' })).toBeVisible();
+  await page.getByLabel('What landed in your inbox?').fill('<img src=x onerror="alert(1)"> Send your password immediately.');
+  await page.getByRole('button', { name: 'Decode message' }).click();
+  await expect(page.getByRole('heading', { name: 'High risk' })).toBeVisible();
+  await expect(page.locator('.evidence-message')).toContainText('<img src=x');
+  await expect(page.locator('.evidence-message img')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+test('loading and API errors are visible; editing prevents stale results', async ({ page }) => {
+  await page.goto('/');
+  await page.route('**/api/analyze', async route => { await new Promise(r => setTimeout(r, 400)); await route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: 'Provider unavailable. Select demo mode.' }) }); });
+  await page.getByLabel('What landed in your inbox?').fill('Hello');
+  await page.getByRole('button', { name: 'Decode message' }).click();
+  await expect(page.getByRole('heading', { name: 'Looking closer.' })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('Provider unavailable');
+  await page.getByRole('button', { name: 'Decode message' }).click();
+  await page.getByLabel('What landed in your inbox?').fill('Changed message');
+  await expect(page.getByRole('heading', { name: 'Turn uncertainty into clarity.' })).toBeVisible();
+  await expect(page.getByRole('alert')).toBeHidden();
+});
+test('copy and print actions work without submitting again', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto('/');
+  await page.getByRole('button', { name: /When care becomes pressure/ }).click();
+  await page.getByRole('button', { name: 'Decode message' }).click();
+  await expect(page.getByRole('heading', { name: 'Critical risk' })).toBeVisible();
+  await page.getByRole('button', { name: 'Copy reply', exact: true }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('without pressure');
+  await page.getByRole('button', { name: 'Copy report', exact: true }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('DEMO ANALYSIS');
+  await page.evaluate(() => { window.print = () => { document.body.dataset.printed = 'yes'; }; });
+  await page.getByRole('button', { name: /Print report/ }).click();
+  await expect(page.locator('body')).toHaveAttribute('data-printed', 'yes');
+});
+test('live mode requires explicit selection and displays provider disclosure', async ({ page }) => {
+  await page.route('**/api/config', route => route.fulfill({ contentType: 'application/json', body: '{"liveAvailable":true}' }));
+  await page.goto('/');
+  await expect(page.getByLabel('Analysis mode')).toHaveValue('demo');
+  await page.getByLabel('Analysis mode').selectOption('live');
+  await expect(page.locator('#privacy')).toContainText('sends this text to your configured AI provider');
+  await page.route('**/api/analyze', route => route.fulfill({ status: 504, contentType: 'application/json', body: '{"error":"The AI provider timed out. Try again or select demo mode."}' }));
+  await page.getByLabel('What landed in your inbox?').fill('Analyze this.');
+  await page.getByRole('button', { name: 'Decode message' }).click();
+  await expect(page.getByRole('alert')).toContainText('timed out');
+  await expect(page.getByLabel('Analysis mode')).toHaveValue('live');
+});

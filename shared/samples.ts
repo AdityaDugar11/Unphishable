@@ -1,0 +1,8 @@
+export const samples = [
+  { title: 'Account lockdown', channel: 'EMAIL', kind: 'Suspicious', text: 'SECURITY ALERT: Your account will be suspended in 30 minutes. This is the official security team. Verify your password at https://account-verify.example immediately to avoid losing access. Do not contact support; they cannot help with this case.' },
+  { title: 'An urgent transfer', channel: 'WORK CHAT', kind: 'Suspicious', text: 'This is your CEO. I need you to wire $4,800 to our new vendor immediately. Keep this between us and do not call me. I am in a meeting. Ignore the usual approval process; I take full responsibility.' },
+  { title: 'The exclusive prize', channel: 'SMS', kind: 'Suspicious', text: 'Congratulations! You have won a luxury phone. Only 3 prizes left. Thousands of people have already claimed theirs. Pay the processing fee within 10 minutes to claim your prize before it expires.' },
+  { title: 'When care becomes pressure', channel: 'DIRECT MESSAGE', kind: 'Coercive', text: 'After everything I have done for you, you owe me this. If you really cared about me, you would send the money today. Do not tell anyone about this. You are the only person I can trust.' },
+  { title: 'A routine security notice', channel: 'EMAIL', kind: 'Benign', text: 'A new sign-in was detected on your account. If this was you, no action is needed. Otherwise, open the app directly and review your recent activity in Settings. We will never ask you to share your password or verification code.' },
+  { title: 'A friendly invitation', channel: 'GROUP CHAT', kind: 'Benign', text: 'We are trying the new cafe on Saturday. The coffee looks great and I think you would enjoy it! Would you like to join us? No pressure if you already have plans.' },
+];
